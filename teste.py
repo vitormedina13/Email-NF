@@ -1,311 +1,162 @@
 import streamlit as st
 import pandas as pd
 import openpyxl
-from datetime import datetime, timedelta
-from io import BytesIO
+from openpyxl.utils.dataframe import dataframe_to_rows
+from datetime import datetime
+import io
 import os
-from dateutil.relativedelta import relativedelta
+from pathlib import Path
 
-# Configuração da página
-st.set_page_config(
-    page_title="Extrator de Dados de Câmbio",
-    page_icon="💱",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
+st.set_page_config(page_title="Transferência de Dados de Câmbio", layout="wide")
 
-# Estilo CSS personalizado
-st.markdown("""
-    <style>
-    .main {
-        padding: 1rem 2rem;
-    }
-    .stButton button {
-        width: 100%;
-        height: 3rem;
-        font-size: 1.1rem;
-        font-weight: bold;
-        background-color: #4CAF50;
-        color: white;
-    }
-    .success-message {
-        background-color: #e6f4ea;
-        color: #137333;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        border-left: 5px solid #137333;
-        margin: 1rem 0;
-    }
-    .error-message {
-        background-color: #fce8e6;
-        color: #c5221f;
-        padding: 1rem;
-        border-radius: 0.5rem;
-        border-left: 5px solid #c5221f;
-        margin: 1rem 0;
-    }
-    .upload-area {
-        border: 2px dashed #cccccc;
-        border-radius: 5px;
-        padding: 20px;
-        text-align: center;
-        margin: 10px 0;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+st.title("Transferência de Dados de Câmbio")
 
-def main():
-    st.title("🔄 Extrator de Dados de Câmbio")
-    st.markdown("### Transferência de dados entre planilhas de câmbio")
-    
-    with st.expander("ℹ️ Como usar", expanded=False):
-        st.markdown("""
-        **Este aplicativo extrai dados da planilha de operações de câmbio e transfere para a planilha de Notas Fiscais.**
+# Função para ler os dados do arquivo de origem
+def ler_dados_cambio(arquivo_cambio, data_inicial, data_final):
+    try:
+        # Carregar o arquivo Excel com openpyxl para preservar formatação
+        wb = openpyxl.load_workbook(arquivo_cambio, data_only=True)
         
-        1. Faça upload dos arquivos de origem e destino
-        2. Selecione o período desejado para filtrar os dados
-        3. Clique em "Extrair e Transferir Dados"
-        4. Verifique o resultado e baixe o arquivo atualizado
+        # Selecionar a planilha BGP e BGX Cambio
+        ws = wb["BGP e BGX Cambio"]
         
-        **Campos extraídos:**
-        - Data (coluna B)
-        - Cliente (coluna T)
-        - Receita BGX (coluna AV)
+        # Converter os dados da planilha para um DataFrame
+        data = []
+        for row in ws.iter_rows(min_row=2, values_only=True):  # Começar da segunda linha para pular o cabeçalho
+            if row[1] is not None:  # Coluna B (Data)
+                data.append({
+                    "Data": row[1],  # Coluna B
+                    "Cliente": row[19],  # Coluna T
+                    "Receita_BGX": row[47]  # Coluna AV
+                })
         
-        **Destino dos dados:**
-        - Data → coluna A
-        - Receita BGX → coluna E
-        - Cliente → coluna I
-        """)
-    
-    # Upload de arquivos
-    st.subheader("📁 Upload de Arquivos")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.markdown("**Arquivo de Origem:**")
-        cambio_file = st.file_uploader(
-            "Faça upload do arquivo de operações de câmbio (.xlsm)",
-            type=["xlsm", "xlsx"],
-            help="Arquivo que contém os dados a serem extraídos"
-        )
-    
-    with col2:
-        st.markdown("**Arquivo de Destino:**")
-        op_file = st.file_uploader(
-            "Faça upload do arquivo de operações (.xlsm)",
-            type=["xlsm", "xlsx"],
-            help="Arquivo onde os dados serão inseridos"
-        )
-    
-    # Verificação de upload dos arquivos
-    files_uploaded = cambio_file is not None and op_file is not None
-    
-    if not files_uploaded:
-        st.warning("⚠️ Por favor, faça upload de ambos os arquivos para continuar.")
-    
-    # Seção de seleção de período
-    st.subheader("📅 Período")
-    
-    # Obter o primeiro e último dia do mês atual
-    today = datetime.now()
-    first_day_of_month = today.replace(day=1)
-    next_month = first_day_of_month + relativedelta(months=1)
-    last_day_of_month = next_month - timedelta(days=1)
-    
-    col1, col2, col3 = st.columns([2, 2, 3])
-    
-    with col1:
-        data_inicial = st.date_input(
-            "Data inicial",
-            value=first_day_of_month,
-            help="Selecione a data inicial do período"
-        )
-    
-    with col2:
-        data_final = st.date_input(
-            "Data final",
-            value=last_day_of_month,
-            help="Selecione a data final do período"
-        )
-    
-    with col3:
-        st.markdown("**Períodos predefinidos:**")
-        cols = st.columns(4)
+        df = pd.DataFrame(data)
         
-        # Função para atualizar as datas
-        if cols[0].button("📆 Este mês"):
-            data_inicial = first_day_of_month
-            data_final = last_day_of_month
-            st.experimental_rerun()
-            
-        if cols[1].button("◀️ Mês anterior"):
-            data_inicial = (first_day_of_month - relativedelta(months=1))
-            data_final = first_day_of_month - timedelta(days=1)
-            st.experimental_rerun()
-            
-        if cols[2].button("📆 Ano atual"):
-            data_inicial = today.replace(month=1, day=1)
-            data_final = today.replace(month=12, day=31)
-            st.experimental_rerun()
-            
-        if cols[3].button("🔄 Últimos 30 dias"):
-            data_inicial = today - timedelta(days=30)
-            data_final = today
-            st.experimental_rerun()
+        # Converter a coluna Data para datetime se ainda não estiver nesse formato
+        if not pd.api.types.is_datetime64_any_dtype(df["Data"]):
+            df["Data"] = pd.to_datetime(df["Data"], errors='coerce')
+        
+        # Filtrar por data
+        if data_inicial and data_final:
+            data_inicial = pd.to_datetime(data_inicial)
+            data_final = pd.to_datetime(data_final)
+            df = df[(df["Data"] >= data_inicial) & (df["Data"] <= data_final)]
+        
+        return df
     
-    # Botão de processamento
-    st.markdown("### 🚀 Executar")
-    process_button = st.button("Extrair e Transferir Dados", disabled=not files_uploaded)
+    except Exception as e:
+        st.error(f"Erro ao ler o arquivo de câmbio: {str(e)}")
+        return None
+
+# Função para atualizar o arquivo de destino
+def atualizar_notas_fiscais(arquivo_nf, dados_cambio):
+    try:
+        # Carregar o arquivo de destino
+        wb = openpyxl.load_workbook(arquivo_nf)
+        
+        # Selecionar a aba correta
+        ws = wb["Todas as Op - Câmbio"]
+        
+        # Encontrar a última linha com dados na tabela
+        ultima_linha = 1  # Começar da linha 1
+        for row in ws.iter_rows(min_row=2, min_col=1, max_col=1):
+            if row[0].value is not None:
+                ultima_linha = row[0].row
+            else:
+                break
+        
+        # Adicionar os novos dados a partir da última linha + 1
+        linha_atual = ultima_linha + 1
+        
+        # Inserir os dados nas colunas corretas
+        for _, row in dados_cambio.iterrows():
+            ws.cell(row=linha_atual, column=1).value = row["Data"]  # Coluna A - Data
+            ws.cell(row=linha_atual, column=9).value = row["Cliente"]  # Coluna I - Cliente
+            ws.cell(row=linha_atual, column=5).value = row["Receita_BGX"]  # Coluna E - Receita BGX
+            linha_atual += 1
+        
+        # Criar um buffer de bytes para salvar o arquivo atualizado
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+        
+        return output
     
-    # Log de processamento
-    log_container = st.container()
-    
-    if process_button and files_uploaded:
-        with st.spinner("Processando dados..."):
-            log_messages = []
-            def add_log(message):
-                log_messages.append(message)
-                with log_container:
-                    st.text_area("Log de Processamento", value="\n".join(log_messages), height=300, key="log_area")
+    except Exception as e:
+        st.error(f"Erro ao atualizar o arquivo de notas fiscais: {str(e)}")
+        return None
+
+# Interface Streamlit
+st.header("Selecione os Arquivos")
+
+# Upload de arquivos
+arquivo_cambio_upload = st.file_uploader("Selecione o arquivo de Operações de câmbio", type=["xlsm", "xlsx"])
+arquivo_nf_upload = st.file_uploader("Selecione o arquivo de Notas Fiscais", type=["xlsm", "xlsx"])
+
+# Seleção de datas
+col1, col2 = st.columns(2)
+with col1:
+    data_inicial = st.date_input("Data Inicial", value=None)
+with col2:
+    data_final = st.date_input("Data Final", value=None)
+
+if arquivo_cambio_upload and arquivo_nf_upload:
+    if st.button("Processar Dados"):
+        with st.spinner("Processando..."):
+            # Salvar os arquivos carregados temporariamente
+            temp_cambio = "temp_cambio.xlsm"
+            temp_nf = "temp_nf.xlsm"
             
-            try:
-                # Início do processamento
-                add_log(f"[{datetime.now().strftime('%H:%M:%S')}] Iniciando processamento...")
-                add_log(f"[{datetime.now().strftime('%H:%M:%S')}] Período: {data_inicial.strftime('%d/%m/%Y')} a {data_final.strftime('%d/%m/%Y')}")
+            with open(temp_cambio, 'wb') as f:
+                f.write(arquivo_cambio_upload.getvalue())
+            
+            with open(temp_nf, 'wb') as f:
+                f.write(arquivo_nf_upload.getvalue())
+            
+            # Ler os dados do arquivo de câmbio
+            dados_cambio = ler_dados_cambio(temp_cambio, data_inicial, data_final)
+            
+            if dados_cambio is not None and not dados_cambio.empty:
+                st.success(f"Dados lidos com sucesso! {len(dados_cambio)} registros encontrados.")
                 
-                # Carregar o arquivo de origem
-                add_log(f"[{datetime.now().strftime('%H:%M:%S')}] Carregando arquivo de câmbio...")
-                try:
-                    cambio_df = pd.read_excel(
-                        cambio_file,
-                        sheet_name="BGP e BGX Cambio",
-                        engine="openpyxl"
-                    )
-                    add_log(f"[{datetime.now().strftime('%H:%M:%S')}] Arquivo carregado com sucesso. Encontradas {len(cambio_df)} linhas.")
-                except Exception as e:
-                    add_log(f"[{datetime.now().strftime('%H:%M:%S')}] ERRO ao carregar o arquivo: {str(e)}")
-                    st.error(f"Erro ao carregar o arquivo de câmbio: {str(e)}")
-                    return
+                # Mostrar os dados que serão transferidos
+                st.subheader("Dados a serem transferidos:")
+                st.dataframe(dados_cambio)
                 
-                # Extrair colunas específicas
-                add_log(f"[{datetime.now().strftime('%H:%M:%S')}] Extraindo colunas específicas...")
-                try:
-                    # Usar índices de coluna (B=1, T=19, AV=47 em base 0)
-                    extracted_df = cambio_df.iloc[:, [1, 19, 47]]
-                    extracted_df.columns = ["Data", "Cliente", "Receita BGX"]
-                    add_log(f"[{datetime.now().strftime('%H:%M:%S')}] Colunas extraídas com sucesso.")
-                except Exception as e:
-                    add_log(f"[{datetime.now().strftime('%H:%M:%S')}] ERRO ao extrair colunas: {str(e)}")
-                    st.error(f"Erro ao extrair colunas: {str(e)}")
-                    return
+                # Atualizar o arquivo de notas fiscais
+                arquivo_atualizado = atualizar_notas_fiscais(temp_nf, dados_cambio)
                 
-                # Filtrar por data
-                add_log(f"[{datetime.now().strftime('%H:%M:%S')}] Aplicando filtro de datas...")
-                try:
-                    extracted_df["Data"] = pd.to_datetime(extracted_df["Data"], errors='coerce')
-                    mask = (extracted_df["Data"] >= pd.Timestamp(data_inicial)) & (extracted_df["Data"] <= pd.Timestamp(data_final))
-                    filtered_df = extracted_df.loc[mask].copy()
-                    
-                    if filtered_df.empty:
-                        add_log(f"[{datetime.now().strftime('%H:%M:%S')}] Não foram encontrados dados para o período selecionado.")
-                        st.warning("⚠️ Não foram encontrados dados para o período selecionado.")
-                        return
-                    
-                    add_log(f"[{datetime.now().strftime('%H:%M:%S')}] Filtro aplicado. {len(filtered_df)} registros encontrados.")
-                except Exception as e:
-                    add_log(f"[{datetime.now().strftime('%H:%M:%S')}] ERRO ao aplicar filtro de datas: {str(e)}")
-                    st.error(f"Erro ao aplicar filtro de datas: {str(e)}")
-                    return
-                
-                # Exibir amostra dos dados extraídos
-                st.subheader("📊 Dados Extraídos")
-                st.dataframe(filtered_df, use_container_width=True)
-                
-                # Abrir o arquivo de destino com openpyxl
-                add_log(f"[{datetime.now().strftime('%H:%M:%S')}] Abrindo arquivo de destino...")
-                try:
-                    wb = openpyxl.load_workbook(op_file, keep_vba=True)
-                    
-                    # Selecionar a aba desejada
-                    try:
-                        ws = wb["Todas as Op - Câmbio"]
-                        add_log(f"[{datetime.now().strftime('%H:%M:%S')}] Aba 'Todas as Op - Câmbio' encontrada.")
-                    except KeyError:
-                        add_log(f"[{datetime.now().strftime('%H:%M:%S')}] ERRO: Aba 'Todas as Op - Câmbio' não encontrada!")
-                        st.error("Erro: Aba 'Todas as Op - Câmbio' não encontrada no arquivo de destino.")
-                        return
-                    
-                    # Encontrar a última linha com dados na tabela
-                    add_log(f"[{datetime.now().strftime('%H:%M:%S')}] Procurando última linha disponível na tabela...")
-                    last_row = 0
-                    for row in ws.iter_rows(min_row=1, max_col=1):
-                        if row[0].value is not None:
-                            last_row = row[0].row
-                        else:
-                            if last_row > 0:  # Já encontramos pelo menos uma linha com dados
-                                break
-                    
-                    add_log(f"[{datetime.now().strftime('%H:%M:%S')}] Última linha ocupada: {last_row}")
-                    
-                    # Adicionar dados na tabela de destino
-                    add_log(f"[{datetime.now().strftime('%H:%M:%S')}] Inserindo {len(filtered_df)} registros na tabela...")
-                    for i, (_, row) in enumerate(filtered_df.iterrows()):
-                        last_row += 1
-                        # Adicionar data (coluna A)
-                        ws.cell(row=last_row, column=1, value=row["Data"].date())
-                        # Adicionar receita BGX (coluna E)
-                        ws.cell(row=last_row, column=5, value=row["Receita BGX"])
-                        # Adicionar cliente (coluna I)
-                        ws.cell(row=last_row, column=9, value=row["Cliente"])
-                    
-                    # Salvar em buffer para download
-                    buffer = BytesIO()
-                    add_log(f"[{datetime.now().strftime('%H:%M:%S')}] Salvando arquivo...")
-                    wb.save(buffer)
-                    buffer.seek(0)
-                    
-                    # Exibir sucesso
-                    add_log(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ PROCESSAMENTO CONCLUÍDO COM SUCESSO!")
-                    
-                    # Mensagem de sucesso estilizada
-                    st.markdown(f"""
-                    <div class="success-message">
-                        <h3>✅ Operação concluída com sucesso!</h3>
-                        <p>Total de {len(filtered_df)} registros transferidos.</p>
-                        <p>Clique no botão abaixo para baixar o arquivo atualizado.</p>
-                    </div>
-                    """, unsafe_allow_html=True)
-                    
-                    # Botão de download
-                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                    file_name = os.path.basename(op_file.name)
-                    download_name = f"Operacoes_Atualizadas_{timestamp}.xlsm"
-                    
+                if arquivo_atualizado:
+                    # Oferecer o download do arquivo atualizado
+                    nome_arquivo = "Operacoes_Atualizadas.xlsm"
                     st.download_button(
-                        label="📥 Baixar Arquivo Atualizado",
-                        data=buffer,
-                        file_name=download_name,
-                        mime="application/vnd.ms-excel.sheet.macroEnabled.12",
-                        key="download_button"
+                        label="Baixar Arquivo Atualizado",
+                        data=arquivo_atualizado,
+                        file_name=nome_arquivo,
+                        mime="application/vnd.ms-excel.sheet.macroEnabled.12"
                     )
                     
-                except Exception as e:
-                    add_log(f"[{datetime.now().strftime('%H:%M:%S')}] ERRO ao processar arquivo de destino: {str(e)}")
-                    st.error(f"Erro ao processar arquivo de destino: {str(e)}")
-                    return
-                    
-            except Exception as e:
-                add_log(f"[{datetime.now().strftime('%H:%M:%S')}] ERRO geral: {str(e)}")
-                st.markdown(f"""
-                <div class="error-message">
-                    <h3>❌ Erro durante o processamento</h3>
-                    <p>{str(e)}</p>
-                </div>
-                """, unsafe_allow_html=True)
-                return
+                    st.success("Processo concluído com sucesso!")
+            else:
+                st.warning("Nenhum dado encontrado para o período selecionado.")
+            
+            # Limpar arquivos temporários
+            try:
+                os.remove(temp_cambio)
+                os.remove(temp_nf)
+            except:
+                pass
 
-# Executar a aplicação
-if __name__ == "__main__":
-    main()
+# Instruções de uso
+st.sidebar.header("Instruções de Uso")
+st.sidebar.markdown("""
+1. Selecione o arquivo de operações de câmbio: "Operações de câmbio BRA.xlsm"
+2. Selecione o arquivo de notas fiscais: "01. Operações.xlsm"
+3. Escolha o intervalo de datas para filtrar os dados
+4. Clique em "Processar Dados"
+5. Verifique os dados que serão transferidos
+6. Baixe o arquivo atualizado
+""")
+
+st.sidebar.markdown("---")
+st.sidebar.info("Este aplicativo transfere dados de câmbio entre arquivos Excel.")
