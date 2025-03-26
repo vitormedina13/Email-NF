@@ -74,7 +74,7 @@ def ler_dados_destino(arquivo_nf):
         st.error(f"Erro ao ler o arquivo de destino: {str(e)}")
         return None, None
 
-# Função para atualizar os dados
+# Função para atualizar os dados - CORRIGIDA
 def atualizar_dados(df_destino, dados_cambio):
     try:
         # Preparar os dados para inserção
@@ -84,28 +84,52 @@ def atualizar_dados(df_destino, dados_cambio):
             "Receita_BGX": dados_cambio["Receita_BGX"]
         })
         
+        # Imprimir para debug
+        st.write("Novos dados a inserir:", novos_dados.shape)
+        
         # Criar uma cópia do dataframe de destino
         df_atualizado = df_destino.copy()
         
-        # Obter o índice da última linha não vazia
-        ultima_linha = df_atualizado.shape[0]
+        # Obter o índice da última linha não vazia (verificando apenas a primeira coluna)
+        ultima_linha = df_destino.shape[0]
+        for i in range(df_destino.shape[0]-1, -1, -1):
+            if pd.notna(df_destino.iloc[i, 0]):  # Verifica se a primeira coluna não é NaN
+                ultima_linha = i + 1
+                break
         
-        # Inserir os novos dados
-        for idx, row in novos_dados.iterrows():
-            # Criar nova linha
-            nova_linha = pd.Series(index=df_atualizado.columns)
+        st.write(f"Última linha ocupada: {ultima_linha}")
+        
+        # Criar um novo DataFrame para armazenar os resultados
+        # Isso garante que preservamos a estrutura original do DataFrame de destino
+        novas_linhas = []
+        
+        # Para cada linha nos novos dados
+        for _, row in novos_dados.iterrows():
+            # Criar uma nova linha com a mesma estrutura do df_destino
+            nova_linha = [None] * len(df_destino.columns)
             
-            # Atribuir valores nas colunas corretas
-            nova_linha.iloc[0] = row["Data"]         # Coluna A (índice 0)
-            nova_linha.iloc[4] = row["Receita_BGX"]  # Coluna E (índice 4)
-            nova_linha.iloc[8] = row["Cliente"]      # Coluna I (índice 8)
+            # Preencher apenas as colunas específicas
+            nova_linha[0] = row["Data"]         # Coluna A (índice 0)
+            nova_linha[4] = row["Receita_BGX"]  # Coluna E (índice 4)
+            nova_linha[8] = row["Cliente"]      # Coluna I (índice 8)
             
-            # Adicionar a nova linha ao dataframe
-            df_atualizado.loc[ultima_linha + idx] = nova_linha
+            # Adicionar à lista de novas linhas
+            novas_linhas.append(nova_linha)
+        
+        # Converter a lista de novas linhas para DataFrame
+        novas_linhas_df = pd.DataFrame(novas_linhas, columns=df_destino.columns)
+        
+        # Adicionar as novas linhas ao DataFrame atualizado
+        df_atualizado = pd.concat([df_atualizado, novas_linhas_df], ignore_index=True)
+        
+        st.write(f"Novas linhas adicionadas: {len(novas_linhas)}")
+        st.write(f"Tamanho final do DataFrame: {df_atualizado.shape}")
         
         return df_atualizado
     except Exception as e:
         st.error(f"Erro ao atualizar os dados: {str(e)}")
+        import traceback
+        st.error(traceback.format_exc())
         return None
 
 # Função para salvar dados no Excel
@@ -173,6 +197,19 @@ df_destino_completo = None
 dados_cambio = None
 df_atualizado = None
 
+# Criar containers para armazenar o estado da aplicação
+if 'dados_carregados' not in st.session_state:
+    st.session_state.dados_carregados = False
+    
+if 'dados_destino_carregados' not in st.session_state:
+    st.session_state.dados_destino_carregados = False
+    
+if 'df_destino_completo' not in st.session_state:
+    st.session_state.df_destino_completo = None
+    
+if 'dados_cambio' not in st.session_state:
+    st.session_state.dados_cambio = None
+
 # Tab layout
 tab1, tab2, tab3 = st.tabs(["Arquivo de Origem", "Arquivo de Destino", "Arquivo Atualizado"])
 
@@ -185,6 +222,8 @@ if arquivo_cambio_upload:
                 
                 if dados_cambio is not None and not dados_cambio.empty:
                     st.success(f"Dados de câmbio carregados com sucesso! {len(dados_cambio)} registros encontrados.")
+                    st.session_state.dados_carregados = True
+                    st.session_state.dados_cambio = dados_cambio
                     
                     # Mostrar os dados
                     st.subheader("Dados a serem transferidos:")
@@ -213,6 +252,8 @@ if arquivo_nf_upload:
                 
                 if dados_destino is not None:
                     st.success("Arquivo de destino carregado com sucesso!")
+                    st.session_state.dados_destino_carregados = True
+                    st.session_state.df_destino_completo = df_destino_completo
                     
                     # Mostrar os dados
                     st.subheader("Dados atuais no arquivo de destino:")
@@ -234,11 +275,15 @@ if arquivo_nf_upload:
                     st.warning("Não foi possível carregar o arquivo de destino.")
 
 # Botão para combinar os dados
-if dados_cambio is not None and df_destino_completo is not None:
-    with tab3:
+with tab3:
+    if (st.session_state.dados_carregados and 
+        st.session_state.dados_destino_carregados and 
+        st.session_state.dados_cambio is not None and 
+        st.session_state.df_destino_completo is not None):
+        
         if st.button("Combinar Dados"):
             with st.spinner("Combinando dados..."):
-                df_atualizado = atualizar_dados(df_destino_completo, dados_cambio)
+                df_atualizado = atualizar_dados(st.session_state.df_destino_completo, st.session_state.dados_cambio)
                 
                 if df_atualizado is not None:
                     st.success("Dados combinados com sucesso!")
@@ -256,10 +301,12 @@ if dados_cambio is not None and df_destino_completo is not None:
                         if idx < len(df_atualizado.columns):
                             dados_visualizacao[nome] = df_atualizado.iloc[:, idx]
                     
-                    st.dataframe(dados_visualizacao)
+                    # Mostrar uma amostra maior dos dados para debug
+                    st.write("Amostra dos primeiros 20 registros:")
+                    st.dataframe(dados_visualizacao.head(20))
                     
                     # Oferecer download do arquivo atualizado
-                    buffer_novo = salvar_em_excel(df_atualizado)
+                    buffer_novo = salvar_em_excel(df_atualizado, arquivo_nf_upload)
                     buffer_simples = salvar_em_excel(df_atualizado, None)
                     
                     if buffer_novo is not None:
@@ -293,6 +340,8 @@ if dados_cambio is not None and df_destino_completo is not None:
                         )
                 else:
                     st.error("Erro ao combinar os dados.")
+    else:
+        st.info("Por favor, primeiro carregue os dados de câmbio e o arquivo de destino nas abas anteriores.")
 
 # Instruções de uso
 st.sidebar.header("Instruções de Uso")
