@@ -1,41 +1,31 @@
 import streamlit as st
 import pandas as pd
 import openpyxl
-from openpyxl.utils.dataframe import dataframe_to_rows
 from datetime import datetime
 import io
 import os
+from pathlib import Path
 
 st.set_page_config(page_title="Transferência de Dados de Câmbio", layout="wide")
+
 st.title("Transferência de Dados de Câmbio")
 
 # Função para ler os dados do arquivo de origem
 def ler_dados_cambio(arquivo_cambio, data_inicial, data_final):
     try:
-        # Carregar o arquivo Excel
-        # Usar o pandas diretamente para simplificar
+        # Usar pandas para ler os dados
         df = pd.read_excel(
             arquivo_cambio, 
             sheet_name="BGP e BGX Cambio",
             engine="openpyxl"
         )
         
-        # Verificar se as colunas necessárias existem
-        try:
-            # Tentar usar os nomes de colunas
-            dados = pd.DataFrame({
-                "Data": df.iloc[:, 1],  # Coluna B (index 1)
-                "Cliente": df.iloc[:, 19],  # Coluna T (index 19)
-                "Receita_BGX": df.iloc[:, 47]  # Coluna AV (index 47)
-            })
-        except:
-            st.warning("As colunas não foram encontradas pelos índices esperados. Usando leitura alternativa.")
-            # Ler por índice como fallback
-            dados = pd.DataFrame({
-                "Data": df.iloc[:, 1],
-                "Cliente": df.iloc[:, 19],
-                "Receita_BGX": df.iloc[:, 47]
-            })
+        # Extrair as colunas necessárias
+        dados = pd.DataFrame({
+            "Data": df.iloc[:, 1],  # Coluna B (index 1)
+            "Cliente": df.iloc[:, 19],  # Coluna T (index 19)
+            "Receita_BGX": df.iloc[:, 47]  # Coluna AV (index 47)
+        })
         
         # Remover linhas com data vazia
         dados = dados.dropna(subset=["Data"])
@@ -56,38 +46,119 @@ def ler_dados_cambio(arquivo_cambio, data_inicial, data_final):
         st.error(f"Erro ao ler o arquivo de câmbio: {str(e)}")
         return None
 
-# Função para preparar um dataframe para o arquivo de destino
-def preparar_df_destino(dados_cambio, df_destino=None):
-    """
-    Prepara um dataframe para exportação sem depender de macros
-    """
-    if df_destino is None:
-        # Criar um novo dataframe se não for fornecido
-        df_destino = pd.DataFrame(columns=["Data", "Cliente", "Receita_BGX"])
+# Função para ler os dados do arquivo de destino
+def ler_dados_destino(arquivo_nf):
+    try:
+        # Ler a aba específica
+        df_destino = pd.read_excel(
+            arquivo_nf,
+            sheet_name="Todas as Op - Câmbio",
+            engine="openpyxl"
+        )
+        
+        # Pegar apenas as colunas relevantes para visualização
+        colunas_relevantes = {
+            0: "Data",           # Coluna A
+            4: "Receita_BGX",    # Coluna E
+            8: "Cliente"         # Coluna I
+        }
+        
+        dados_visualizacao = pd.DataFrame()
+        for idx, nome in colunas_relevantes.items():
+            if idx < len(df_destino.columns):
+                dados_visualizacao[nome] = df_destino.iloc[:, idx]
+        
+        return dados_visualizacao, df_destino
     
-    # Preparar os dados para inserção
-    novos_dados = pd.DataFrame({
-        "Data": dados_cambio["Data"],
-        "Cliente": dados_cambio["Cliente"],
-        "Receita_BGX": dados_cambio["Receita_BGX"]
-    })
-    
-    # Concatenar com os dados existentes
-    df_combinado = pd.concat([df_destino, novos_dados], ignore_index=True)
-    
-    return df_combinado
+    except Exception as e:
+        st.error(f"Erro ao ler o arquivo de destino: {str(e)}")
+        return None, None
+
+# Função para atualizar os dados
+def atualizar_dados(df_destino, dados_cambio):
+    try:
+        # Preparar os dados para inserção
+        novos_dados = pd.DataFrame({
+            "Data": dados_cambio["Data"],
+            "Cliente": dados_cambio["Cliente"],
+            "Receita_BGX": dados_cambio["Receita_BGX"]
+        })
+        
+        # Criar uma cópia do dataframe de destino
+        df_atualizado = df_destino.copy()
+        
+        # Obter o índice da última linha não vazia
+        ultima_linha = df_atualizado.shape[0]
+        
+        # Inserir os novos dados
+        for idx, row in novos_dados.iterrows():
+            # Criar nova linha
+            nova_linha = pd.Series(index=df_atualizado.columns)
+            
+            # Atribuir valores nas colunas corretas
+            nova_linha.iloc[0] = row["Data"]         # Coluna A (índice 0)
+            nova_linha.iloc[4] = row["Receita_BGX"]  # Coluna E (índice 4)
+            nova_linha.iloc[8] = row["Cliente"]      # Coluna I (índice 8)
+            
+            # Adicionar a nova linha ao dataframe
+            df_atualizado.loc[ultima_linha + idx] = nova_linha
+        
+        return df_atualizado
+    except Exception as e:
+        st.error(f"Erro ao atualizar os dados: {str(e)}")
+        return None
+
+# Função para salvar dados no Excel
+def salvar_em_excel(df, arquivo_original=None):
+    try:
+        output = io.BytesIO()
+        
+        if arquivo_original is not None:
+            # Tentar preservar a estrutura original
+            try:
+                # Ler o workbook original
+                wb = openpyxl.load_workbook(arquivo_original, keep_vba=True)
+                
+                # Obter a planilha de destino
+                sheet_name = "Todas as Op - Câmbio"
+                if sheet_name in wb.sheetnames:
+                    ws = wb[sheet_name]
+                    
+                    # Limpar a planilha (manter cabeçalho)
+                    for row in list(ws.rows)[1:]:
+                        for cell in row:
+                            cell.value = None
+                    
+                    # Escrever os novos dados
+                    for r_idx, row in df.iterrows():
+                        for c_idx, value in enumerate(row):
+                            ws.cell(row=r_idx+2, column=c_idx+1).value = value
+                    
+                    # Salvar no buffer
+                    wb.save(output)
+                else:
+                    raise Exception(f"Aba {sheet_name} não encontrada")
+            except Exception as e:
+                st.warning(f"Não foi possível preservar a estrutura original. Criando novo arquivo. Erro: {str(e)}")
+                with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                    df.to_excel(writer, sheet_name='Dados_Atualizados', index=False)
+        else:
+            # Criar um novo arquivo
+            with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                df.to_excel(writer, sheet_name='Dados_Atualizados', index=False)
+        
+        output.seek(0)
+        return output
+    except Exception as e:
+        st.error(f"Erro ao salvar os dados: {str(e)}")
+        return None
 
 # Interface Streamlit
 st.header("Selecione os Arquivos")
 
 # Upload de arquivos
 arquivo_cambio_upload = st.file_uploader("Selecione o arquivo de Operações de câmbio", type=["xlsm", "xlsx"])
-
-# Opção para também importar o arquivo de destino para referência
-importar_destino = st.checkbox("Importar arquivo de destino para referência", value=False)
-arquivo_nf_upload = None
-if importar_destino:
-    arquivo_nf_upload = st.file_uploader("Selecione o arquivo de Notas Fiscais", type=["xlsm", "xlsx"])
+arquivo_nf_upload = st.file_uploader("Selecione o arquivo de Notas Fiscais", type=["xlsm", "xlsx"])
 
 # Seleção de datas
 col1, col2 = st.columns(2)
@@ -96,74 +167,162 @@ with col1:
 with col2:
     data_final = st.date_input("Data Final", value=None)
 
+# Variáveis para armazenar os dados
+dados_destino = None
+df_destino_completo = None
+dados_cambio = None
+df_atualizado = None
+
+# Tab layout
+tab1, tab2, tab3 = st.tabs(["Arquivo de Origem", "Arquivo de Destino", "Arquivo Atualizado"])
+
+# Processar e exibir os dados quando os arquivos forem carregados
 if arquivo_cambio_upload:
-    if st.button("Processar Dados"):
-        with st.spinner("Processando..."):
-            # Ler os dados do arquivo de câmbio
-            dados_cambio = ler_dados_cambio(arquivo_cambio_upload, data_inicial, data_final)
-            
-            if dados_cambio is not None and not dados_cambio.empty:
-                st.success(f"Dados lidos com sucesso! {len(dados_cambio)} registros encontrados.")
+    with tab1:
+        if st.button("Carregar Dados de Câmbio"):
+            with st.spinner("Processando arquivo de origem..."):
+                dados_cambio = ler_dados_cambio(arquivo_cambio_upload, data_inicial, data_final)
                 
-                # Mostrar os dados que serão transferidos
-                st.subheader("Dados a serem transferidos:")
-                st.dataframe(dados_cambio)
+                if dados_cambio is not None and not dados_cambio.empty:
+                    st.success(f"Dados de câmbio carregados com sucesso! {len(dados_cambio)} registros encontrados.")
+                    
+                    # Mostrar os dados
+                    st.subheader("Dados a serem transferidos:")
+                    st.dataframe(dados_cambio)
+                    
+                    # Oferecer download dos dados extraídos
+                    buffer = io.BytesIO()
+                    with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                        dados_cambio.to_excel(writer, sheet_name='Dados_Extraídos', index=False)
+                    buffer.seek(0)
+                    
+                    st.download_button(
+                        label="Baixar Dados Extraídos (XLSX)",
+                        data=buffer,
+                        file_name="Dados_Cambio_Extraidos.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                else:
+                    st.warning("Nenhum dado encontrado para o período selecionado.")
+
+if arquivo_nf_upload:
+    with tab2:
+        if st.button("Carregar Arquivo de Destino"):
+            with st.spinner("Processando arquivo de destino..."):
+                dados_destino, df_destino_completo = ler_dados_destino(arquivo_nf_upload)
                 
-                # Criar um novo arquivo Excel
-                df_final = preparar_df_destino(dados_cambio)
+                if dados_destino is not None:
+                    st.success("Arquivo de destino carregado com sucesso!")
+                    
+                    # Mostrar os dados
+                    st.subheader("Dados atuais no arquivo de destino:")
+                    st.dataframe(dados_destino)
+                    
+                    # Oferecer download do arquivo original
+                    buffer = io.BytesIO()
+                    arquivo_nf_upload.seek(0)
+                    buffer.write(arquivo_nf_upload.read())
+                    buffer.seek(0)
+                    
+                    st.download_button(
+                        label="Baixar Arquivo de Destino Original",
+                        data=buffer,
+                        file_name="Arquivo_Destino_Original.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                else:
+                    st.warning("Não foi possível carregar o arquivo de destino.")
+
+# Botão para combinar os dados
+if dados_cambio is not None and df_destino_completo is not None:
+    with tab3:
+        if st.button("Combinar Dados"):
+            with st.spinner("Combinando dados..."):
+                df_atualizado = atualizar_dados(df_destino_completo, dados_cambio)
                 
-                # Criar um buffer para o download
-                buffer = io.BytesIO()
-                
-                # Criar um ExcelWriter
-                with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                    # Escrever os dados na planilha
-                    df_final.to_excel(writer, sheet_name='Dados_Cambio', index=False)
-                
-                buffer.seek(0)
-                
-                # Oferecer o download do arquivo Excel (formato normal .xlsx)
-                st.download_button(
-                    label="Baixar Dados Extraídos (XLSX)",
-                    data=buffer,
-                    file_name="Dados_Cambio_Extraidos.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-                
-                # Também oferecer download como CSV para máxima compatibilidade
-                csv_buffer = io.StringIO()
-                df_final.to_csv(csv_buffer, index=False)
-                
-                st.download_button(
-                    label="Baixar Dados como CSV",
-                    data=csv_buffer.getvalue(),
-                    file_name="Dados_Cambio_Extraidos.csv",
-                    mime="text/csv"
-                )
-                
-                st.success("Processo concluído com sucesso!")
-                
-                st.info("""
-                **Nota importante**: Esta versão alternativa extrai os dados e disponibiliza-os em um novo arquivo Excel 
-                (.xlsx) ou CSV, sem macros. Estes dados podem ser copiados manualmente para o arquivo de destino.
-                
-                Se precisar manter o formato original com macros, use a outra versão do aplicativo.
-                """)
-            else:
-                st.warning("Nenhum dado encontrado para o período selecionado.")
+                if df_atualizado is not None:
+                    st.success("Dados combinados com sucesso!")
+                    
+                    # Mostrar os dados atualizados (apenas as colunas relevantes)
+                    st.subheader("Dados atualizados:")
+                    colunas_visualizacao = {
+                        0: "Data",
+                        4: "Receita_BGX",
+                        8: "Cliente"
+                    }
+                    
+                    dados_visualizacao = pd.DataFrame()
+                    for idx, nome in colunas_visualizacao.items():
+                        if idx < len(df_atualizado.columns):
+                            dados_visualizacao[nome] = df_atualizado.iloc[:, idx]
+                    
+                    st.dataframe(dados_visualizacao)
+                    
+                    # Oferecer download do arquivo atualizado
+                    buffer_novo = salvar_em_excel(df_atualizado)
+                    buffer_simples = salvar_em_excel(df_atualizado, None)
+                    
+                    if buffer_novo is not None:
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.download_button(
+                                label="Baixar Arquivo Completo Atualizado",
+                                data=buffer_novo,
+                                file_name="Arquivo_Destino_Atualizado.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
+                        
+                        with col2:
+                            st.download_button(
+                                label="Baixar Apenas os Dados (Formato Simples)",
+                                data=buffer_simples,
+                                file_name="Dados_Atualizados_Simples.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            )
+                        
+                        # Adicionar opção de CSV
+                        csv_buffer = io.StringIO()
+                        dados_visualizacao.to_csv(csv_buffer, index=False)
+                        
+                        st.download_button(
+                            label="Baixar Dados como CSV",
+                            data=csv_buffer.getvalue(),
+                            file_name="Dados_Atualizados.csv",
+                            mime="text/csv"
+                        )
+                else:
+                    st.error("Erro ao combinar os dados.")
 
 # Instruções de uso
 st.sidebar.header("Instruções de Uso")
 st.sidebar.markdown("""
-1. Selecione o arquivo de operações de câmbio: "Operações de câmbio BRA.xlsm"
-2. Escolha o intervalo de datas para filtrar os dados
-3. Clique em "Processar Dados"
-4. Verifique os dados que serão extraídos
-5. Baixe o arquivo com os dados extraídos (XLSX ou CSV)
-6. Importe esses dados para o arquivo de destino
+### Passo a passo:
 
-Esta versão alternativa gera um novo arquivo sem macros, o que evita problemas de compatibilidade.
+1. **Arquivo de Origem**:
+   - Selecione o arquivo "Operações de câmbio BRA.xlsm"
+   - Escolha o intervalo de datas
+   - Clique em "Carregar Dados de Câmbio"
+   - Verifique os dados extraídos
+
+2. **Arquivo de Destino**:
+   - Selecione o arquivo "01. Operações.xlsm"
+   - Clique em "Carregar Arquivo de Destino"
+   - Visualize os dados atuais
+
+3. **Combinação**:
+   - Vá para a aba "Arquivo Atualizado"
+   - Clique em "Combinar Dados"
+   - Visualize o resultado
+   - Baixe o arquivo atualizado no formato desejado
 """)
 
 st.sidebar.markdown("---")
-st.sidebar.info("Este aplicativo extrai dados de câmbio para um novo arquivo Excel ou CSV.")
+st.sidebar.info("""
+**Observações importantes:**
+- Os dados são adicionados no final da tabela existente
+- A Data é inserida na coluna A
+- A Receita BGX é inserida na coluna E
+- O Cliente é inserido na coluna I
+- Os formatos mais simples (XLSX e CSV) têm maior compatibilidade
+""")
